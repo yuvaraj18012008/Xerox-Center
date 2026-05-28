@@ -15,60 +15,101 @@ import toast from 'react-hot-toast';
 
 const AuthContext = createContext();
 
+/**
+ * Helper: Build a fallback user object from a Firebase user
+ * when the backend is unreachable (e.g. GitHub Pages deployment).
+ */
+const buildFirebaseFallbackUser = (firebaseUser) => {
+  const nameParts = (firebaseUser.displayName || '').split(' ');
+  return {
+    id: firebaseUser.uid,
+    firstName: nameParts[0] || firebaseUser.email?.split('@')[0] || 'User',
+    lastName: nameParts.slice(1).join(' ') || 'User',
+    email: firebaseUser.email,
+    phone: firebaseUser.phoneNumber || '',
+    role: 'customer',
+    isVerified: firebaseUser.emailVerified
+  };
+};
+
+/**
+ * Helper: Try to sync with the backend. Returns { token, user } on success,
+ * or null if the backend is unreachable.
+ */
+const tryBackendSync = async (syncPayload) => {
+  try {
+    const response = await authService.firebaseSync(syncPayload);
+    if (response.data.success) {
+      return response.data.data; // { token, user }
+    }
+  } catch (error) {
+    // 405 = GitHub Pages, ERR_NETWORK = backend offline, 500 = server error
+    console.warn('Backend sync unavailable, using Firebase-only mode:', error.message);
+  }
+  return null;
+};
+
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(null);
   const [loading, setLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
+  /**
+   * Sets the authenticated state from either backend data or Firebase fallback.
+   */
+  const setAuthState = (userData, jwtToken) => {
+    setUser(userData);
+    setToken(jwtToken);
+    setIsAuthenticated(true);
+    if (jwtToken) localStorage.setItem('token', jwtToken);
+    localStorage.setItem('user', JSON.stringify(userData));
+  };
+
+  const clearAuthState = () => {
+    setUser(null);
+    setToken(null);
+    setIsAuthenticated(false);
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+  };
+
   // Sync auth state with backend after Firebase state changes
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         try {
-          // Fetch the Firebase ID Token
           const idToken = await firebaseUser.getIdToken();
           
-          // Exchange/Sync with Backend MongoDB
-          const response = await authService.firebaseSync({
+          // Try backend sync
+          const backendData = await tryBackendSync({
             token: idToken,
             email: firebaseUser.email,
             uid: firebaseUser.uid
           });
 
-          if (response.data.success) {
-            const { token: jwtToken, user: dbUser } = response.data.data;
-            setToken(jwtToken);
-            setUser(dbUser);
-            setIsAuthenticated(true);
-            localStorage.setItem('token', jwtToken);
-            localStorage.setItem('user', JSON.stringify(dbUser));
+          if (backendData) {
+            setAuthState(backendData.user, backendData.token);
+          } else {
+            // Fallback: use saved data or Firebase user directly
+            const savedToken = localStorage.getItem('token');
+            const savedUser = localStorage.getItem('user');
+            if (savedToken && savedUser) {
+              setAuthState(JSON.parse(savedUser), savedToken);
+            } else {
+              // Use Firebase user data as fallback
+              const fallbackUser = buildFirebaseFallbackUser(firebaseUser);
+              setAuthState(fallbackUser, idToken);
+            }
           }
         } catch (error) {
-          console.error("Backend sync failed after Firebase auth change:", error);
-          // If backend sync fails (e.g. backend offline or not seeded), fallback to local token/user if exists
-          const savedToken = localStorage.getItem('token');
-          const savedUser = localStorage.getItem('user');
-          if (savedToken && savedUser) {
-            setToken(savedToken);
-            setUser(JSON.parse(savedUser));
-            setIsAuthenticated(true);
-          } else {
-            // Otherwise force logout
-            await signOut(auth);
-            setUser(null);
-            setToken(null);
-            setIsAuthenticated(false);
-            localStorage.removeItem('token');
-            localStorage.removeItem('user');
-          }
+          console.error("Auth state sync error:", error);
+          // Last resort fallback
+          const fallbackUser = buildFirebaseFallbackUser(firebaseUser);
+          setAuthState(fallbackUser, null);
         }
       } else {
-        setUser(null);
-        setToken(null);
-        setIsAuthenticated(false);
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
+        clearAuthState();
       }
       setLoading(false);
     });
@@ -87,8 +128,8 @@ export const AuthProvider = ({ children }) => {
       const firebaseUser = userCredential.user;
       const idToken = await firebaseUser.getIdToken();
 
-      // 2. Synchronize details with the backend database
-      const response = await authService.firebaseSync({
+      // 2. Try to sync with backend (optional - may not be available)
+      const backendData = await tryBackendSync({
         token: idToken,
         uid: firebaseUser.uid,
         email,
@@ -98,18 +139,24 @@ export const AuthProvider = ({ children }) => {
         isRegistering: true
       });
 
-      if (response.data.success) {
-        const { token: jwtToken, user: dbUser } = response.data.data;
-        setToken(jwtToken);
-        setUser(dbUser);
-        setIsAuthenticated(true);
-
-        localStorage.setItem('token', jwtToken);
-        localStorage.setItem('user', JSON.stringify(dbUser));
-
-        toast.success('Registration successful!');
-        return response.data;
+      if (backendData) {
+        setAuthState(backendData.user, backendData.token);
+      } else {
+        // Fallback to Firebase user data
+        const fallbackUser = {
+          id: firebaseUser.uid,
+          firstName: firstName || email.split('@')[0],
+          lastName: lastName || 'User',
+          email,
+          phone: phone || '',
+          role: 'customer',
+          isVerified: firebaseUser.emailVerified
+        };
+        setAuthState(fallbackUser, idToken);
       }
+
+      toast.success('Registration successful!');
+      return { success: true };
     } catch (error) {
       let message = 'Registration failed';
       if (error.code === 'auth/email-already-in-use') {
@@ -136,34 +183,29 @@ export const AuthProvider = ({ children }) => {
       const firebaseUser = userCredential.user;
       const idToken = await firebaseUser.getIdToken();
 
-      // 2. Exchange for backend JWT and load user data from MongoDB
-      const response = await authService.firebaseSync({
+      // 2. Try to sync with backend (optional - may not be available)
+      const backendData = await tryBackendSync({
         token: idToken,
         uid: firebaseUser.uid,
         email: firebaseUser.email
       });
 
-      if (response.data.success) {
-        const { token: jwtToken, user: dbUser } = response.data.data;
-        setToken(jwtToken);
-        setUser(dbUser);
-        setIsAuthenticated(true);
-
-        localStorage.setItem('token', jwtToken);
-        localStorage.setItem('user', JSON.stringify(dbUser));
-
-        toast.success('Login successful!');
-        return response.data;
+      if (backendData) {
+        setAuthState(backendData.user, backendData.token);
+      } else {
+        // Fallback to Firebase user data
+        const fallbackUser = buildFirebaseFallbackUser(firebaseUser);
+        setAuthState(fallbackUser, idToken);
       }
+
+      toast.success('Login successful!');
+      return { success: true };
     } catch (error) {
       let message = 'Login failed';
       if (error.code === 'auth/invalid-credential' || error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
         message = 'Invalid email or password';
       } else if (error.code === 'auth/too-many-requests') {
         message = 'Too many failed attempts. Please try again later.';
-      } else if (error.response?.status === 500) {
-        message = error.response?.data?.message || 'Server error. Please make sure the backend server is running.';
-        console.error('Backend 500 error details:', error.response?.data);
       } else if (error.response?.data?.message) {
         message = error.response.data.message;
       } else if (error.code === 'ERR_NETWORK') {
@@ -183,7 +225,6 @@ export const AuthProvider = ({ children }) => {
     try {
       setLoading(true);
       const provider = new GoogleAuthProvider();
-      // Configure custom parameters if needed
       provider.setCustomParameters({ prompt: 'select_account' });
       const userCredential = await signInWithPopup(auth, provider);
       const firebaseUser = userCredential.user;
@@ -201,8 +242,8 @@ export const AuthProvider = ({ children }) => {
         lastName = 'User';
       }
 
-      // Synchronize session with backend MongoDB
-      const response = await authService.firebaseSync({
+      // Try to sync with backend (optional)
+      const backendData = await tryBackendSync({
         token: idToken,
         uid: firebaseUser.uid,
         email: firebaseUser.email,
@@ -212,18 +253,24 @@ export const AuthProvider = ({ children }) => {
         isRegistering: true
       });
 
-      if (response.data.success) {
-        const { token: jwtToken, user: dbUser } = response.data.data;
-        setToken(jwtToken);
-        setUser(dbUser);
-        setIsAuthenticated(true);
-
-        localStorage.setItem('token', jwtToken);
-        localStorage.setItem('user', JSON.stringify(dbUser));
-
-        toast.success('Logged in with Google successfully!');
-        return response.data;
+      if (backendData) {
+        setAuthState(backendData.user, backendData.token);
+      } else {
+        // Fallback to Firebase user data
+        const fallbackUser = {
+          id: firebaseUser.uid,
+          firstName,
+          lastName,
+          email: firebaseUser.email,
+          phone: firebaseUser.phoneNumber || '',
+          role: 'customer',
+          isVerified: firebaseUser.emailVerified
+        };
+        setAuthState(fallbackUser, idToken);
       }
+
+      toast.success('Logged in with Google successfully!');
+      return { success: true };
     } catch (error) {
       console.error('Google login error:', error);
       let message = 'Google sign-in failed';
@@ -246,11 +293,7 @@ export const AuthProvider = ({ children }) => {
     try {
       setLoading(true);
       await signOut(auth);
-      setUser(null);
-      setToken(null);
-      setIsAuthenticated(false);
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
+      clearAuthState();
       toast.success('Logged out successfully');
     } catch (error) {
       console.error('Logout error:', error);
