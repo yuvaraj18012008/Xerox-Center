@@ -34,21 +34,19 @@ const generateOrderId = () => {
  * Upload files to Firebase Storage and return download URLs
  */
 const uploadFilesToStorage = async (files, orderId) => {
-  const uploadedFiles = [];
-
-  for (const file of files) {
+  const uploadPromises = files.map(async (file) => {
     const storageRef = ref(storage, `orders/${orderId}/${file.name}`);
     await uploadBytes(storageRef, file);
     const downloadURL = await getDownloadURL(storageRef);
-    uploadedFiles.push({
+    return {
       name: file.name,
       size: file.size,
       type: file.type,
       url: downloadURL
-    });
-  }
+    };
+  });
 
-  return uploadedFiles;
+  return Promise.all(uploadPromises);
 };
 
 /**
