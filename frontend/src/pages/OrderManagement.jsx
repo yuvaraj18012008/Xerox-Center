@@ -867,8 +867,13 @@ export default function OrderManagement() {
       }
     } catch (error) {
       console.error('Order submission error:', error);
-      const message = error.response?.data?.message || 'Failed to place order. Please try again.';
-      toast.error(message);
+      let message;
+      if (error.message?.includes('not available')) {
+        message = 'Order placement is not available in demo mode. Please connect a backend server to enable this feature.';
+      } else {
+        message = error.response?.data?.message || 'Failed to place order. Please try again.';
+      }
+      toast.error(message, { duration: 5000 });
     } finally {
       setIsSubmitting(false);
     }
