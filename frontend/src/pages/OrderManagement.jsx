@@ -21,7 +21,8 @@ import {
   FiFileText,
   FiPhone,
 } from 'react-icons/fi';
-import { orderService } from '../services/api';
+import { orderService, isStaticHost } from '../services/api';
+import { createFirebaseOrder } from '../services/firebaseOrderService';
 import { useAuth } from '../context/AuthContext';
 
 // ─── Hardcoded price rates ────────────────────────────────────────────
@@ -832,47 +833,48 @@ export default function OrderManagement() {
 
     setIsSubmitting(true);
     try {
-      // Build FormData with actual files
-      const formDataToSend = new FormData();
-      formDataToSend.append('service', formData.service);
-      formDataToSend.append('paperSize', formData.paperSize);
-      formDataToSend.append('colorMode', formData.colorMode);
-      formDataToSend.append('copies', formData.copies);
-      formDataToSend.append('sided', formData.sided);
-      formDataToSend.append('bindingType', formData.bindingType);
-      formDataToSend.append('notes', formData.notes);
-      formDataToSend.append('phone', formData.phone);
-      formDataToSend.append('estimatedPrice', estimatedPrice);
-      formDataToSend.append('priceBreakdown', JSON.stringify(priceBreakdown));
+      let orderId;
 
-      // Append actual files
-      formData.files.forEach((file) => {
-        formDataToSend.append('files', file);
-      });
+      if (isStaticHost) {
+        // Use Firebase Firestore directly (no backend needed)
+        const result = await createFirebaseOrder(formData, estimatedPrice, priceBreakdown);
+        orderId = result.data.orderId;
+      } else {
+        // Use backend API
+        const formDataToSend = new FormData();
+        formDataToSend.append('service', formData.service);
+        formDataToSend.append('paperSize', formData.paperSize);
+        formDataToSend.append('colorMode', formData.colorMode);
+        formDataToSend.append('copies', formData.copies);
+        formDataToSend.append('sided', formData.sided);
+        formDataToSend.append('bindingType', formData.bindingType);
+        formDataToSend.append('notes', formData.notes);
+        formDataToSend.append('phone', formData.phone);
+        formDataToSend.append('estimatedPrice', estimatedPrice);
+        formDataToSend.append('priceBreakdown', JSON.stringify(priceBreakdown));
 
-      const response = await orderService.createOrder(formDataToSend);
+        formData.files.forEach((file) => {
+          formDataToSend.append('files', file);
+        });
 
-      if (response.data.success) {
-        toast.success(
-          <div>
-            <p className="font-bold">Order Placed Successfully! 🎉</p>
-            <p className="text-sm mt-1">
-              Order #{response.data.data.orderId} has been received.
-            </p>
-          </div>,
-          { duration: 5000, style: { padding: '16px' } }
-        );
-        setFormData(INITIAL_FORM);
-        setCurrentStep(1);
+        const response = await orderService.createOrder(formDataToSend);
+        orderId = response.data.data.orderId;
       }
+
+      toast.success(
+        <div>
+          <p className="font-bold">Order Placed Successfully! 🎉</p>
+          <p className="text-sm mt-1">
+            Order #{orderId} has been received.
+          </p>
+        </div>,
+        { duration: 5000, style: { padding: '16px' } }
+      );
+      setFormData(INITIAL_FORM);
+      setCurrentStep(1);
     } catch (error) {
       console.error('Order submission error:', error);
-      let message;
-      if (error.message?.includes('not available')) {
-        message = 'Order placement is not available in demo mode. Please connect a backend server to enable this feature.';
-      } else {
-        message = error.response?.data?.message || 'Failed to place order. Please try again.';
-      }
+      const message = error.response?.data?.message || error.message || 'Failed to place order. Please try again.';
       toast.error(message, { duration: 5000 });
     } finally {
       setIsSubmitting(false);
