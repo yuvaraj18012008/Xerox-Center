@@ -1,0 +1,16 @@
+// .gitignore for backend
+.env
+node_modules/
+dist/
+build/
+.DS_Store
+*.log
+.idea/
+.vscode/settings.json
+uploads/
+coverage/
+.env.local
+.env.*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
