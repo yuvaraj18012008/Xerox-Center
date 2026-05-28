@@ -33,6 +33,8 @@ const storage = multer.diskStorage({
   }
 });
 
+import { AppError } from '../utils/errorHandler.js';
+
 // File filter — allow common document and image types
 const fileFilter = (req, file, cb) => {
   const allowedTypes = [
@@ -52,7 +54,7 @@ const fileFilter = (req, file, cb) => {
   if (allowedTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error(`File type ${file.mimetype} is not allowed`), false);
+    cb(new AppError(`File type ${file.mimetype} is not allowed. Please upload PDF, Word, Excel, PowerPoint, or Image files.`, 400), false);
   }
 };
 
