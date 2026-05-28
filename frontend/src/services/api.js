@@ -4,9 +4,7 @@ import axios from 'axios';
  * Detect if the app is running on a static host (GitHub Pages)
  * where no backend API is available.
  */
-const isStaticHost = window.location.hostname.includes('github.io') ||
-                     window.location.hostname.includes('netlify.app') ||
-                     window.location.hostname.includes('vercel.app');
+const isStaticHost = false; // We are migrating to a Render backend, so we always use the API.
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
