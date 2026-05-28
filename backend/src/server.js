@@ -7,12 +7,22 @@ import { fileURLToPath } from 'url';
 import path, { dirname } from 'path';
 import fs from 'fs';
 
-// Load environment variables
-dotenv.config();
-
 // Get __dirname equivalent in ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+// Load environment variables from the backend root .env file
+dotenv.config({ path: path.join(__dirname, '../.env') });
+
+// Validate critical environment variables
+const requiredEnvVars = ['MONGODB_URI', 'JWT_SECRET', 'JWT_EXPIRE'];
+const missingEnvVars = requiredEnvVars.filter(v => !process.env[v]);
+if (missingEnvVars.length > 0) {
+  console.error(`\n❌ FATAL: Missing required environment variables: ${missingEnvVars.join(', ')}`);
+  console.error(`   Make sure your .env file exists at: ${path.join(__dirname, '../.env')}`);
+  console.error(`   And contains all required variables.\n`);
+  process.exit(1);
+}
 
 // Import routes
 import authRoutes from './routes/authRoutes.js';
@@ -133,11 +143,27 @@ app.use((req, res) => {
 // Global error handler
 app.use((err, req, res, next) => {
   console.error('Error:', err.message || err);
+  if (err.stack) {
+    console.error('Stack:', err.stack);
+  }
+  
   const statusCode = err.statusCode || 500;
+  const message = err.message || 'Internal Server Error';
+  
+  // Provide user-friendly messages for common errors
+  let userMessage = message;
+  if (statusCode === 500) {
+    if (message.includes('secretOrPrivateKey')) {
+      userMessage = 'Server configuration error. Please contact the administrator.';
+    } else if (message.includes('ECONNREFUSED') || message.includes('MongoServerError')) {
+      userMessage = 'Database connection error. Please try again later.';
+    }
+  }
+  
   res.status(statusCode).json({
     success: false,
-    message: err.message || 'Internal Server Error',
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+    message: userMessage,
+    ...(process.env.NODE_ENV === 'development' && { error: message, stack: err.stack })
   });
 });
 

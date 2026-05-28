@@ -383,7 +383,7 @@ export const firebaseSync = asyncHandler(async (req, res) => {
       const decodedToken = await admin.auth().verifyIdToken(token);
       verifiedEmail = decodedToken.email || email;
     } catch (error) {
-      console.error("Firebase ID Token verification failed:", error);
+      console.error("Firebase ID Token verification failed:", error.message);
       return res.status(401).json({
         success: false,
         message: 'Invalid Firebase ID Token'
@@ -393,56 +393,104 @@ export const firebaseSync = asyncHandler(async (req, res) => {
     console.warn("Bypassing Firebase Token verification (dev/fallback mode).");
   }
 
-  // Find user by email
-  let user = await User.findOne({ email: verifiedEmail.toLowerCase() });
+  try {
+    // Find user by email
+    let user = await User.findOne({ email: verifiedEmail.toLowerCase() });
 
-  if (!user) {
-    // Determine info from payload or generate defaults
-    const cleanFirstName = firstName || verifiedEmail.split('@')[0];
-    const cleanLastName = lastName || 'User';
-    const cleanPhone = (phone && phone.replace(/\D/g, '').slice(-10)) || '9876543210';
-    
-    // Satisfy required schema fields
-    const dummyPassword = crypto.randomBytes(16).toString('hex') + 'Aa1!';
+    if (!user) {
+      // Determine info from payload or generate defaults
+      const cleanFirstName = firstName || verifiedEmail.split('@')[0];
+      const cleanLastName = lastName || 'User';
+      const cleanPhone = (phone && phone.replace(/\D/g, '').slice(-10)) || '9876543210';
+      
+      // Satisfy required schema fields
+      const dummyPassword = crypto.randomBytes(16).toString('hex') + 'Aa1!';
 
-    user = await User.create({
-      firstName: cleanFirstName,
-      lastName: cleanLastName,
-      email: verifiedEmail.toLowerCase(),
-      phone: cleanPhone.length === 10 ? cleanPhone : '9876543210',
-      password: dummyPassword,
-      isVerified: true
-    });
-  } else if (isRegistering) {
-    // Update existing user properties if registering
-    if (firstName) user.firstName = firstName;
-    if (lastName) user.lastName = lastName;
-    if (phone) {
-      const cleanPhone = phone.replace(/\D/g, '').slice(-10);
-      if (cleanPhone.length === 10) user.phone = cleanPhone;
+      user = await User.create({
+        firstName: cleanFirstName,
+        lastName: cleanLastName,
+        email: verifiedEmail.toLowerCase(),
+        phone: cleanPhone.length === 10 ? cleanPhone : '9876543210',
+        password: dummyPassword,
+        isVerified: true
+      });
+    } else if (isRegistering) {
+      // Update existing user properties if registering
+      if (firstName) user.firstName = firstName;
+      if (lastName) user.lastName = lastName;
+      if (phone) {
+        const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+        if (cleanPhone.length === 10) user.phone = cleanPhone;
+      }
+      await user.save();
     }
-    await user.save();
-  }
 
-  // Generate JWT token for backend authorization
-  const jwtToken = user.getSignedJwtToken();
+    // Generate JWT token for backend authorization
+    if (!process.env.JWT_SECRET) {
+      console.error('JWT_SECRET is not configured in environment variables');
+      return res.status(500).json({
+        success: false,
+        message: 'Server configuration error. Please contact the administrator.'
+      });
+    }
 
-  res.status(200).json({
-    success: true,
-    message: 'User session synchronized successfully',
-    data: {
-      token: jwtToken,
-      user: {
-        id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
-        isVerified: user.isVerified
+    const jwtToken = user.getSignedJwtToken();
+
+    res.status(200).json({
+      success: true,
+      message: 'User session synchronized successfully',
+      data: {
+        token: jwtToken,
+        user: {
+          id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          phone: user.phone,
+          role: user.role,
+          isVerified: user.isVerified
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Firebase sync - Database/JWT error:', error.message);
+    
+    // Handle specific mongoose validation errors
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(e => e.message);
+      return res.status(400).json({
+        success: false,
+        message: messages.join(', ')
+      });
+    }
+    
+    // Handle duplicate key error (email already exists race condition)
+    if (error.code === 11000) {
+      // Retry finding the user since it was created between our check and insert
+      const user = await User.findOne({ email: verifiedEmail.toLowerCase() });
+      if (user) {
+        const jwtToken = user.getSignedJwtToken();
+        return res.status(200).json({
+          success: true,
+          message: 'User session synchronized successfully',
+          data: {
+            token: jwtToken,
+            user: {
+              id: user._id,
+              firstName: user.firstName,
+              lastName: user.lastName,
+              email: user.email,
+              phone: user.phone,
+              role: user.role,
+              isVerified: user.isVerified
+            }
+          }
+        });
       }
     }
-  });
+    
+    throw error; // Re-throw for the global error handler
+  }
 });
 
 export default {

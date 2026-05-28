@@ -159,8 +159,15 @@ export const AuthProvider = ({ children }) => {
       let message = 'Login failed';
       if (error.code === 'auth/invalid-credential' || error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
         message = 'Invalid email or password';
+      } else if (error.code === 'auth/too-many-requests') {
+        message = 'Too many failed attempts. Please try again later.';
+      } else if (error.response?.status === 500) {
+        message = error.response?.data?.message || 'Server error. Please make sure the backend server is running.';
+        console.error('Backend 500 error details:', error.response?.data);
       } else if (error.response?.data?.message) {
         message = error.response.data.message;
+      } else if (error.code === 'ERR_NETWORK') {
+        message = 'Cannot connect to the server. Please check if the backend is running.';
       } else if (error.message) {
         message = error.message;
       }
